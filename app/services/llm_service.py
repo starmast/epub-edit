@@ -205,57 +205,6 @@ class LLMService:
             "model": result["model"],
         }
 
-    async def edit_chapter(
-        self,
-        chapter_content: str,
-        system_prompt: str,
-        max_tokens: Optional[int] = None,
-        context_chapters: Optional[Dict[str, str]] = None,
-    ) -> Dict:
-        """
-        Edit a single chapter using the LLM (legacy method, use edit_chapters_batch for better consistency).
-
-        Args:
-            chapter_content: The chapter content to edit
-            system_prompt: System prompt with editing instructions
-            max_tokens: Maximum tokens in response
-            context_chapters: Optional dict with 'previous' and 'next' chapter content for context
-
-        Returns:
-            Dictionary with edit commands and usage stats
-        """
-        # Format chapter content with line numbers
-        lines = chapter_content.split('\n')
-        numbered_content = '\n'.join([f"{i+1}: {line}" for i, line in enumerate(lines)])
-
-        # Build user message with context
-        user_message = "CHAPTER TO EDIT (with line numbers):\n\n"
-        user_message += numbered_content
-
-        # Add context chapters if provided
-        if context_chapters:
-            if context_chapters.get('previous'):
-                prev_lines = context_chapters['previous'].split('\n')
-                user_message = "PREVIOUS CHAPTER (for context only, do not edit):\n" + '\n'.join(prev_lines[:50]) + "\n...\n\n" + user_message
-
-            if context_chapters.get('next'):
-                next_lines = context_chapters['next'].split('\n')
-                user_message += "\n\nNEXT CHAPTER (for context only, do not edit):\n" + '\n'.join(next_lines[:50]) + "\n..."
-
-        # Prepare messages
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ]
-
-        # Get completion
-        result = await self.generate_completion(messages, max_tokens)
-
-        return {
-            "edits": result["content"],
-            "usage": result["usage"],
-            "model": result["model"],
-        }
 
     @staticmethod
     async def test_connection(
