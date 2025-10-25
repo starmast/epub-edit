@@ -119,6 +119,11 @@ class EditParser:
         """
         commands = []
 
+        # Check for NO_EDITS_NEEDED response
+        if "NO_EDITS_NEEDED" in edit_string.strip():
+            logger.info("LLM indicated no edits needed")
+            return commands
+
         # Split by ◊ separator
         edit_parts = edit_string.split("◊")
 

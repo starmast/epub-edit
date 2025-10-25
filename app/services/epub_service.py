@@ -66,7 +66,7 @@ class EPubService:
             if item.get_type() == ebooklib.ITEM_DOCUMENT:
                 # Extract content
                 content = item.get_content()
-                soup = BeautifulSoup(content, "lxml")
+                soup = BeautifulSoup(content, "xml")
 
                 # Try to extract title from h1, h2, or title tag
                 title = None
@@ -118,7 +118,7 @@ class EPubService:
         Returns:
             Cleaned HTML content
         """
-        soup = BeautifulSoup(html_content, "lxml")
+        soup = BeautifulSoup(html_content, "xml")
 
         # Remove script and style elements
         for element in soup(["script", "style"]):
@@ -138,7 +138,7 @@ class EPubService:
         Returns:
             List of tuples (line_number, text)
         """
-        soup = BeautifulSoup(html_content, "lxml")
+        soup = BeautifulSoup(html_content, "xml")
         text = soup.get_text()
 
         # Split into lines and add line numbers

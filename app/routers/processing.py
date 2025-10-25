@@ -17,6 +17,7 @@ class ProcessingConfig(BaseModel):
     start_chapter: int = 1
     end_chapter: Optional[int] = None
     worker_count: int = 3
+    chapters_per_batch: int = 3  # Number of chapters to edit together for consistency
 
 
 class TestConnectionRequest(BaseModel):
@@ -77,6 +78,7 @@ async def start_processing(
             start_chapter=config.start_chapter,
             end_chapter=end_chapter,
             worker_count=config.worker_count,
+            chapters_per_batch=config.chapters_per_batch,
         )
 
         return {
@@ -85,6 +87,7 @@ async def start_processing(
             "start_chapter": config.start_chapter,
             "end_chapter": end_chapter,
             "worker_count": config.worker_count,
+            "chapters_per_batch": config.chapters_per_batch,
         }
 
     except Exception as e:
