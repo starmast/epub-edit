@@ -138,6 +138,7 @@ class LLMService:
         chapter_content: str,
         system_prompt: str,
         max_tokens: Optional[int] = None,
+        context_chapters: Optional[Dict[str, str]] = None,
     ) -> Dict:
         """
         Edit a chapter using the LLM.
@@ -146,17 +147,33 @@ class LLMService:
             chapter_content: The chapter content to edit
             system_prompt: System prompt with editing instructions
             max_tokens: Maximum tokens in response
+            context_chapters: Optional dict with 'previous' and 'next' chapter content for context
 
         Returns:
             Dictionary with edit commands and usage stats
         """
+        # Format chapter content with line numbers
+        lines = chapter_content.split('\n')
+        numbered_content = '\n'.join([f"{i+1}: {line}" for i, line in enumerate(lines)])
+
+        # Build user message with context
+        user_message = "CHAPTER TO EDIT (with line numbers):\n\n"
+        user_message += numbered_content
+
+        # Add context chapters if provided
+        if context_chapters:
+            if context_chapters.get('previous'):
+                prev_lines = context_chapters['previous'].split('\n')
+                user_message = "PREVIOUS CHAPTER (for context only, do not edit):\n" + '\n'.join(prev_lines[:50]) + "\n...\n\n" + user_message
+
+            if context_chapters.get('next'):
+                next_lines = context_chapters['next'].split('\n')
+                user_message += "\n\nNEXT CHAPTER (for context only, do not edit):\n" + '\n'.join(next_lines[:50]) + "\n..."
+
         # Prepare messages
         messages = [
             {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": f"Please edit the following chapter content:\n\n{chapter_content}",
-            },
+            {"role": "user", "content": user_message},
         ]
 
         # Get completion
@@ -216,9 +233,10 @@ EDITING GOALS:
 6. Preserve the author's voice, style, and intended meaning
 7. DO NOT alter plot points, character actions, or creative choices
 
-EDITING COMMANDS:
-Use these special delimiters to mark your edits:
+OUTPUT FORMAT - CRITICAL:
+Your response must ONLY contain edit commands using these special delimiters. DO NOT include any explanatory text, comments, or conversation.
 
+EDITING COMMANDS:
 R∆line∆pattern⟹replacement  - Replace text on a specific line
 D∆line                       - Delete an entire line
 I∆line∆text                  - Insert new text after a line
@@ -226,16 +244,24 @@ M∆start-end∆text            - Merge/replace a range of lines
 
 Separate multiple edits with: ◊
 
-EXAMPLES:
-R∆5∆said⟹exclaimed◊D∆7◊I∆10∆He paused, gathering his thoughts.
-M∆12-14∆The storm raged throughout the night.
+EXAMPLES OF CORRECT OUTPUT:
+R∆5∆teh⟹the◊R∆7∆said quietly⟹whispered◊D∆12
+R∆23∆recieve⟹receive◊I∆25∆She took a deep breath.
+M∆30-32∆The storm raged throughout the night, shaking the windows.
 
 IMPORTANT RULES:
-- Line numbers are 1-indexed
+- Your ENTIRE response must be edit commands only - no other text
+- Line numbers are 1-indexed (first line is 1, not 0)
+- Line numbers refer to the numbered lines in the "CHAPTER TO EDIT" section
 - Only edit lines that need correction
-- Provide edits in sequential order
+- Provide edits in sequential order by line number
 - Be conservative - when in doubt, don't edit
-- Focus on objective improvements only"""
+- Focus on objective improvements only
+- If no edits are needed, respond with: NO_EDITS_NEEDED
+
+CONTEXT CHAPTERS:
+If previous or next chapters are provided, use them ONLY for understanding context (character names, plot continuity, etc.).
+DO NOT create edit commands for context chapters - only edit the "CHAPTER TO EDIT" section."""
 
     LIGHT = """You are a professional proofreader focused on minimal corrections.
 
@@ -244,6 +270,9 @@ EDITING GOALS:
 2. Correct only clear grammatical mistakes
 3. Preserve the author's voice completely, including stylistic choices
 
+OUTPUT FORMAT - CRITICAL:
+Your response must ONLY contain edit commands using these special delimiters. DO NOT include any explanatory text, comments, or conversation.
+
 EDITING COMMANDS:
 R∆line∆pattern⟹replacement  - Replace text on a specific line
 D∆line                       - Delete an entire line
@@ -252,7 +281,20 @@ M∆start-end∆text            - Merge/replace a range of lines
 
 Separate multiple edits with: ◊
 
-IMPORTANT: Be extremely conservative. Only fix clear errors, not stylistic preferences."""
+EXAMPLES OF CORRECT OUTPUT:
+R∆5∆teh⟹the◊R∆23∆recieve⟹receive
+D∆45◊R∆46∆its⟹it's
+
+IMPORTANT RULES:
+- Your ENTIRE response must be edit commands only - no other text
+- Line numbers are 1-indexed (first line is 1, not 0)
+- Line numbers refer to the numbered lines in the "CHAPTER TO EDIT" section
+- Be extremely conservative - only fix clear errors, not stylistic preferences
+- If no edits are needed, respond with: NO_EDITS_NEEDED
+
+CONTEXT CHAPTERS:
+If previous or next chapters are provided, use them ONLY for understanding context.
+DO NOT create edit commands for context chapters - only edit the "CHAPTER TO EDIT" section."""
 
     MODERATE = DEFAULT  # Same as default
 
@@ -267,6 +309,9 @@ EDITING GOALS:
 6. Ensure consistency throughout
 7. Preserve plot points and character actions
 
+OUTPUT FORMAT - CRITICAL:
+Your response must ONLY contain edit commands using these special delimiters. DO NOT include any explanatory text, comments, or conversation.
+
 EDITING COMMANDS:
 R∆line∆pattern⟹replacement  - Replace text on a specific line
 D∆line                       - Delete an entire line
@@ -275,4 +320,18 @@ M∆start-end∆text            - Merge/replace a range of lines
 
 Separate multiple edits with: ◊
 
-IMPORTANT: Be thorough in improving quality while preserving the core story."""
+EXAMPLES OF CORRECT OUTPUT:
+R∆5∆He said⟹He exclaimed◊R∆7∆walked slowly⟹trudged◊I∆10∆The tension in the room was palpable.
+M∆15-17∆The storm raged throughout the night, its fury unrelenting as rain lashed against the windows.
+
+IMPORTANT RULES:
+- Your ENTIRE response must be edit commands only - no other text
+- Line numbers are 1-indexed (first line is 1, not 0)
+- Line numbers refer to the numbered lines in the "CHAPTER TO EDIT" section
+- Be thorough in improving quality while preserving the core story
+- Provide edits in sequential order by line number
+- If no edits are needed, respond with: NO_EDITS_NEEDED
+
+CONTEXT CHAPTERS:
+If previous or next chapters are provided, use them ONLY for understanding context (character names, plot continuity, etc.).
+DO NOT create edit commands for context chapters - only edit the "CHAPTER TO EDIT" section."""

@@ -360,8 +360,49 @@ class ProcessingService:
             # Load chapter content
             content = FileManager.load_chapter_content(chapter.original_content_path)
 
-            # Edit chapter with LLM
-            result = await llm_service.edit_chapter(content, system_prompt, max_tokens)
+            # Load surrounding chapters for context
+            context_chapters = {}
+
+            # Load previous chapter
+            prev_chapter_num = chapter.chapter_number - 1
+            if prev_chapter_num > 0:
+                try:
+                    result = await session.execute(
+                        select(Chapter)
+                        .where(Chapter.project_id == self.project_id)
+                        .where(Chapter.chapter_number == prev_chapter_num)
+                    )
+                    prev_chapter = result.scalar_one_or_none()
+                    if prev_chapter and prev_chapter.original_content_path:
+                        context_chapters['previous'] = FileManager.load_chapter_content(
+                            prev_chapter.original_content_path
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not load previous chapter: {e}")
+
+            # Load next chapter
+            next_chapter_num = chapter.chapter_number + 1
+            try:
+                result = await session.execute(
+                    select(Chapter)
+                    .where(Chapter.project_id == self.project_id)
+                    .where(Chapter.chapter_number == next_chapter_num)
+                )
+                next_chapter = result.scalar_one_or_none()
+                if next_chapter and next_chapter.original_content_path:
+                    context_chapters['next'] = FileManager.load_chapter_content(
+                        next_chapter.original_content_path
+                    )
+            except Exception as e:
+                logger.warning(f"Could not load next chapter: {e}")
+
+            # Edit chapter with LLM (including context)
+            result = await llm_service.edit_chapter(
+                content,
+                system_prompt,
+                max_tokens,
+                context_chapters=context_chapters if context_chapters else None
+            )
 
             # Parse edits
             commands = EditParser.parse_edits(result["edits"])
