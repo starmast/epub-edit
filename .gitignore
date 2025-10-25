@@ -68,3 +68,4 @@ npm-debug.log*
 tmp/
 temp/
 /.claude
+.claude/settings.local.json
