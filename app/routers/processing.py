@@ -8,6 +8,7 @@ from typing import Optional
 from app.models import get_db, Project
 from app.services import LLMService
 from app.utils import decrypt_api_key
+from app.routers.websocket import manager as websocket_manager
 
 router = APIRouter()
 
@@ -55,8 +56,13 @@ async def start_processing(
     # Import here to avoid circular imports
     from app.services.processing_service import ProcessingService
 
-    # Create processing service
-    processing_service = ProcessingService(db, project_id)
+    # Create WebSocket callback function
+    async def websocket_callback(message: dict):
+        """Broadcast updates to WebSocket clients."""
+        await websocket_manager.broadcast_to_project(project_id, message)
+
+    # Create processing service with WebSocket callback
+    processing_service = ProcessingService(db, project_id, websocket_callback)
 
     # Determine end chapter
     from app.models import Chapter
@@ -226,14 +232,42 @@ async def export_project(project_id: int, db: AsyncSession = Depends(get_db)):
     try:
         # Prepare edited chapters dictionary
         from app.utils import FileManager
+        from app.services.processing_service import ProcessingService
+        import logging
+
+        logger = logging.getLogger(__name__)
 
         edited_chapters = {}
         for chapter in chapters:
             edit_data = FileManager.load_chapter_edits(
                 project_id, chapter.chapter_number
             )
-            if edit_data and "edited_content" in edit_data:
-                edited_chapters[chapter.chapter_number] = edit_data["edited_content"]
+            logger.info(f"Chapter {chapter.chapter_number}: edit_data keys = {list(edit_data.keys()) if edit_data else 'None'}")
+
+            if edit_data and "edited_lines" in edit_data and "original_xhtml" in edit_data:
+                edited_lines = edit_data["edited_lines"]
+                original_xhtml = edit_data["original_xhtml"]
+
+                logger.info(f"Chapter {chapter.chapter_number}: {len(edited_lines)} edited lines, original_xhtml length = {len(original_xhtml)}")
+
+                # If edited_lines is empty, use original XHTML unchanged
+                if not edited_lines:
+                    logger.info(f"Chapter {chapter.chapter_number}: No edited lines, using original XHTML")
+                    edited_chapters[chapter.chapter_number] = original_xhtml
+                    continue
+
+                # Reconstruct XHTML from edited lines
+                edited_text = '\n'.join(edited_lines)
+                logger.info(f"Chapter {chapter.chapter_number}: edited_text length = {len(edited_text)}")
+
+                edited_xhtml = ProcessingService._wrap_body_content(
+                    edited_text,
+                    original_xhtml
+                )
+                logger.info(f"Chapter {chapter.chapter_number}: reconstructed XHTML length = {len(edited_xhtml)}")
+                logger.info(f"Chapter {chapter.chapter_number}: XHTML preview = {edited_xhtml[:200]}...")
+
+                edited_chapters[chapter.chapter_number] = edited_xhtml
 
         if not edited_chapters:
             raise HTTPException(status_code=400, detail="No edited content found")
@@ -258,4 +292,7 @@ async def export_project(project_id: int, db: AsyncSession = Depends(get_db)):
         )
 
     except Exception as e:
+        import traceback
+        logger.error(f"Export failed: {str(e)}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Failed to export: {str(e)}")

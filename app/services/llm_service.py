@@ -174,10 +174,10 @@ class LLMService:
             }
 
             # Add chapter header
-            user_message_parts.append(f"\n{'='*60}")
+            user_message_parts.append(f"\n{'='*3}")
             user_message_parts.append(f"CHAPTER {chapter_num}: {title}")
             user_message_parts.append(f"Lines {start_line}-{end_line}")
-            user_message_parts.append(f"{'='*60}\n")
+            user_message_parts.append(f"{'='*3}\n")
 
             # Add numbered lines for this chapter
             for i, line in enumerate(lines):
@@ -287,6 +287,8 @@ IMPORTANT RULES:
 - Provide edits in sequential order by line number
 - Be conservative - when in doubt, don't edit
 - Focus on objective improvements only
+- DO NOT add newlines or line breaks in replacement text - keep all text on a single line
+- DO NOT split sentences across multiple lines in your edits
 - If no edits are needed for ANY chapter, respond with: NO_EDITS_NEEDED"""
 
     LIGHT = """You are a professional proofreader focused on minimal corrections.

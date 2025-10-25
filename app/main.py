@@ -106,6 +106,22 @@ app.include_router(processing.router, prefix="/api", tags=["processing"])
 app.include_router(websocket.router, prefix="/ws", tags=["websocket"])
 
 
+# Catch-all route for frontend routing (must be last)
+# Serves index.html for all non-API, non-static, non-websocket routes
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+async def serve_spa(full_path: str):
+    """Serve the SPA for all frontend routes."""
+    # Don't interfere with API, static, or websocket routes
+    if full_path.startswith(("api/", "static/", "ws/")):
+        return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
+
+    # Serve index.html for frontend routes
+    index_path = Path("templates/index.html")
+    if index_path.exists():
+        return HTMLResponse(content=index_path.read_text())
+    return HTMLResponse(content="<h1>ePub Editor</h1><p>Welcome to the ePub Editor!</p>")
+
+
 if __name__ == "__main__":
     import uvicorn
 

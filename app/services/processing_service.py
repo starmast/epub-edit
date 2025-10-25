@@ -8,9 +8,10 @@ from sqlalchemy import select, update
 from app.models import Chapter, Project, ProcessingJob
 from app.models.database import async_session_maker
 from app.services.llm_service import LLMService, SystemPrompts
-from app.services.edit_parser import EditParser
+from app.services.edit_parser import EditParser, EditCommand
 from app.services.token_service import TokenService
 from app.utils import FileManager, decrypt_api_key
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
@@ -166,19 +167,46 @@ class ProcessingService:
             # Create LLM service
             llm_service = LLMService(api_endpoint, api_key, model, temperature)
 
+            # Reset chapters in range to "not_started" status
+            # This allows reprocessing of completed chapters
+            reset_result = await self.db_session.execute(
+                select(Chapter)
+                .where(Chapter.project_id == self.project_id)
+                .where(Chapter.chapter_number >= start_chapter)
+                .where(Chapter.chapter_number <= end_chapter)
+            )
+            chapters_to_reset = reset_result.scalars().all()
+
+            # Reset each chapter and send WebSocket updates
+            for chapter in chapters_to_reset:
+                chapter.processing_status = "not_started"
+                chapter.error_message = None
+
+                # Send WebSocket update for status change
+                if self.websocket_callback:
+                    await self.websocket_callback(
+                        {
+                            "type": "chapter_reset",
+                            "project_id": self.project_id,
+                            "chapter_id": chapter.id,
+                            "chapter_number": chapter.chapter_number,
+                        }
+                    )
+
+            await self.db_session.commit()
+
             # Get chapters to process
             result = await self.db_session.execute(
                 select(Chapter)
                 .where(Chapter.project_id == self.project_id)
                 .where(Chapter.chapter_number >= start_chapter)
                 .where(Chapter.chapter_number <= end_chapter)
-                .where(Chapter.processing_status.in_(["not_started", "failed"]))
                 .order_by(Chapter.chapter_number)
             )
             chapters = result.scalars().all()
 
             if not chapters:
-                logger.info("No chapters to process")
+                logger.info("No chapters found in specified range")
                 return
 
             # Group chapters into batches
@@ -373,10 +401,14 @@ class ProcessingService:
             # Prepare chapter data for batch processing
             chapters_data = []
             for chapter in chapter_batch:
-                content = FileManager.load_chapter_content(chapter.original_content_path)
+                # Load the raw XHTML content
+                raw_content = FileManager.load_chapter_content(chapter.original_content_path)
+                # Extract just the body content, removing XML declaration and wrapper tags
+                content = self._extract_body_content(raw_content)
                 chapters_data.append({
                     'number': chapter.chapter_number,
                     'content': content,
+                    'raw_xhtml': raw_content,  # Keep original structure for wrapping later
                     'title': chapter.title,
                     'chapter_obj': chapter
                 })
@@ -415,17 +447,34 @@ class ProcessingService:
             for ch_data in chapters_data:
                 chapter = ch_data['chapter_obj']
                 ch_num = ch_data['number']
-                content = ch_data['content']
+                content = ch_data['content']  # Body content only
+                raw_xhtml = ch_data['raw_xhtml']  # Full XHTML structure
 
                 commands = chapter_commands.get(ch_num, [])
 
-                # Apply edits
-                edited_content, stats = EditParser.apply_edits(content, commands)
+                # Split content into lines (already filtered blank lines during extraction)
+                original_lines = content.split('\n')
 
-                # Save edits
+                # Apply edits to body content
+                edited_body_content, stats = EditParser.apply_edits(content, commands)
+                edited_lines_raw = edited_body_content.split('\n')
+
+                # Normalize lines: remove any embedded newlines that LLM might have added
+                # This ensures line-by-line comparison works correctly
+                edited_lines = []
+                for line in edited_lines_raw:
+                    # Replace any embedded newlines with spaces
+                    normalized = line.replace('\r\n', ' ').replace('\n', ' ').replace('\r', ' ')
+                    # Clean up multiple spaces
+                    normalized = ' '.join(normalized.split())
+                    if normalized:  # Skip empty lines
+                        edited_lines.append(normalized)
+
+                # Save edits with line-by-line structure for diff viewer
                 edit_data = {
-                    "original_content": content,
-                    "edited_content": edited_content,
+                    "original_xhtml": raw_xhtml,  # Save full original XHTML for reconstruction
+                    "original_lines": original_lines,  # Save original as lines for diff (no blank lines)
+                    "edited_lines": edited_lines,  # Save edited as lines for diff (normalized, no embedded newlines)
                     "edit_commands": result["edits"],  # Store full batch edits for reference
                     "chapter_specific_commands": [str(cmd) for cmd in commands],
                     "stats": stats,
@@ -481,6 +530,97 @@ class ProcessingService:
                             "error": str(e),
                         }
                     )
+
+    @staticmethod
+    def _extract_body_content(xhtml_content: str) -> str:
+        """
+        Extract plain text content from XHTML, removing all HTML tags and blank lines.
+
+        Args:
+            xhtml_content: Full XHTML content with XML declaration, DOCTYPE, etc.
+
+        Returns:
+            Plain text content from within the body tags, no blank lines
+        """
+        soup = BeautifulSoup(xhtml_content, "xml")
+
+        # Find the body tag
+        body = soup.find("body")
+        if body:
+            # Get just the text content, no HTML tags
+            text = body.get_text(separator='\n', strip=False)
+
+            # Filter out all blank lines for cleaner LLM editing
+            lines = text.split('\n')
+            cleaned_lines = [line.strip() for line in lines if line.strip()]
+
+            return '\n'.join(cleaned_lines)
+
+        # Fallback: return the full content if no body found
+        return xhtml_content
+
+    @staticmethod
+    def _wrap_body_content(edited_text_content: str, original_xhtml: str) -> str:
+        """
+        Wrap edited plain text back into the original XHTML structure.
+
+        Args:
+            edited_text_content: Edited plain text content (one sentence per line)
+            original_xhtml: Original full XHTML with structure
+
+        Returns:
+            Complete XHTML with edited content in proper structure
+        """
+        soup = BeautifulSoup(original_xhtml, "xml")
+
+        # Find the body tag
+        body = soup.find("body")
+        if body:
+            # Clear the body
+            body.clear()
+
+            # Split edited text into lines - each line is a sentence that becomes a paragraph
+            lines = edited_text_content.split('\n')
+
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+
+                # Check if this looks like a heading
+                is_heading = (
+                    len(stripped) < 80 and (
+                        stripped.isupper() or
+                        stripped.startswith('Chapter ') or
+                        stripped.startswith('CHAPTER ') or
+                        (stripped.count(':') == 1 and len(stripped) < 60)  # "Chapter 1: Title"
+                    )
+                )
+
+                if is_heading:
+                    # Create heading
+                    h_tag = soup.new_tag('h2')
+                    h_tag.string = stripped
+                    body.append(h_tag)
+                else:
+                    # Create paragraph for each sentence/line
+                    p_tag = soup.new_tag('p')
+                    p_tag.string = stripped
+                    body.append(p_tag)
+
+            return str(soup)
+
+        # Fallback: wrap in basic HTML structure
+        lines = edited_text_content.split('\n')
+        paragraphs = '\n'.join(f'<p>{line.strip()}</p>' for line in lines if line.strip())
+
+        return f"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<body>
+{paragraphs}
+</body>
+</html>"""
 
     def _adjust_command_line_number(self, command: EditCommand, start_line: int):
         """

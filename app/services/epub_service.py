@@ -156,7 +156,7 @@ class EPubService:
         edited_chapters: Dict[int, str],
     ) -> str:
         """
-        Reassemble an ePub with edited chapters.
+        Build a new ePub from scratch with edited chapters.
 
         Args:
             original_epub_path: Path to original ePub
@@ -166,49 +166,78 @@ class EPubService:
         Returns:
             Path to the created ePub file
         """
-        # Read original book
+        # Read original book to extract metadata and resources
         book = epub.read_epub(original_epub_path)
 
-        # Create new book with same metadata
+        # Create new book from scratch
         new_book = epub.EpubBook()
 
-        # Copy metadata
-        for meta_type in ["DC", "OPF"]:
-            for meta_name, meta_value in book.metadata.get(meta_type, {}).items():
-                for value in meta_value:
-                    if isinstance(value, tuple):
-                        new_book.add_metadata(meta_type, meta_name, value[0], value[1] if len(value) > 1 else {})
-                    else:
-                        new_book.add_metadata(meta_type, meta_name, value)
+        # Copy basic metadata
+        title = book.get_metadata('DC', 'title')
+        if title:
+            new_book.set_title(title[0][0] if isinstance(title[0], tuple) else title[0])
+        else:
+            new_book.set_title('Edited Book')
 
-        # Process items
-        chapter_num = 1
+        author = book.get_metadata('DC', 'creator')
+        if author:
+            author_name = author[0][0] if isinstance(author[0], tuple) else author[0]
+            new_book.add_author(author_name)
+
+        language = book.get_metadata('DC', 'language')
+        if language:
+            lang = language[0][0] if isinstance(language[0], tuple) else language[0]
+            new_book.set_language(lang)
+        else:
+            new_book.set_language('en')
+
+        # Collect resources (CSS, images) and chapter items
+        chapter_items = []
         for item in book.get_items():
             if item.get_type() == ebooklib.ITEM_DOCUMENT:
-                # Check if we have edited content for this chapter
-                if chapter_num in edited_chapters:
-                    # Create new chapter with edited content
-                    new_chapter = epub.EpubHtml(
-                        title=item.title or f"Chapter {chapter_num}",
-                        file_name=item.file_name,
-                        lang=item.lang or "en",
-                    )
-                    new_chapter.set_content(edited_chapters[chapter_num].encode("utf-8"))
-                    new_book.add_item(new_chapter)
-                else:
-                    # Keep original
-                    new_book.add_item(item)
-
-                chapter_num += 1
-            else:
-                # Copy non-chapter items (CSS, images, etc.)
+                chapter_items.append(item)
+            elif item.get_type() in [ebooklib.ITEM_STYLE, ebooklib.ITEM_IMAGE]:
+                # Copy CSS and images as-is
                 new_book.add_item(item)
 
-        # Copy spine
-        new_book.spine = book.spine
+        # Create chapters with clean structure
+        chapters = []
+        toc = []
 
-        # Copy table of contents
-        new_book.toc = book.toc
+        for chapter_num, orig_item in enumerate(chapter_items, start=1):
+            if chapter_num in edited_chapters:
+                # Use edited content
+                chapter = epub.EpubHtml(
+                    title=orig_item.title or f"Chapter {chapter_num}",
+                    file_name=f"chapter_{chapter_num}.xhtml",
+                    lang='en'
+                )
+                chapter.set_content(edited_chapters[chapter_num].encode("utf-8"))
+            else:
+                # Use original content
+                chapter = epub.EpubHtml(
+                    title=orig_item.title or f"Chapter {chapter_num}",
+                    file_name=f"chapter_{chapter_num}.xhtml",
+                    lang='en'
+                )
+                chapter.set_content(orig_item.get_content())
+
+            new_book.add_item(chapter)
+            chapters.append(chapter)
+
+            # Add to table of contents
+            if chapter.title:
+                toc.append(epub.Link(chapter.file_name, chapter.title, f'chapter_{chapter_num}'))
+
+        # Set spine (reading order)
+        new_book.spine = ['nav'] + chapters
+
+        # Set table of contents
+        new_book.toc = toc
+
+        # Add navigation files
+        new_book.add_item(epub.EpubNcx())
+        new_book.add_item(epub.EpubNav())
 
         # Write the ePub
         epub.write_epub(output_epub_path, new_book)

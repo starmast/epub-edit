@@ -7,7 +7,6 @@ from pydantic import BaseModel
 
 from app.models import get_db, Chapter
 from app.utils import FileManager
-from app.services import EditParser
 
 router = APIRouter()
 
@@ -33,10 +32,11 @@ class ChapterContent(BaseModel):
 
 
 class ChapterDiff(BaseModel):
-    original: str
-    edited: str
-    diff_chunks: List[dict]
+    original_lines: List[str]
+    edited_lines: List[str]
     stats: Optional[dict]
+    chapter_number: int
+    title: Optional[str]
 
 
 @router.get("/projects/{project_id}/chapters", response_model=List[ChapterResponse])
@@ -115,6 +115,7 @@ async def get_chapter_content(chapter_id: int, db: AsyncSession = Depends(get_db
 async def get_chapter_diff(chapter_id: int, db: AsyncSession = Depends(get_db)):
     """
     Get the diff view for a chapter (original vs edited).
+    Returns line-by-line comparison for better diff viewing.
     """
     result = await db.execute(select(Chapter).where(Chapter.id == chapter_id))
     chapter = result.scalar_one_or_none()
@@ -126,11 +127,6 @@ async def get_chapter_diff(chapter_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Chapter has not been processed yet")
 
     try:
-        # Load original content
-        original_content = FileManager.load_chapter_content(
-            chapter.original_content_path
-        )
-
         # Load edit data
         edit_data = FileManager.load_chapter_edits(
             chapter.project_id, chapter.chapter_number
@@ -139,17 +135,13 @@ async def get_chapter_diff(chapter_id: int, db: AsyncSession = Depends(get_db)):
         if not edit_data:
             raise HTTPException(status_code=404, detail="Edit data not found")
 
-        edited_content = edit_data.get("edited_content", "")
-        stats = edit_data.get("stats", {})
-
-        # Generate diff
-        diff_chunks = EditParser.generate_diff(original_content, edited_content)
+        if "original_lines" not in edit_data or "edited_lines" not in edit_data:
+            raise HTTPException(status_code=400, detail="Edit data format invalid - please reprocess this chapter")
 
         return {
-            "original": original_content,
-            "edited": edited_content,
-            "diff_chunks": diff_chunks,
-            "stats": stats,
+            "original_lines": edit_data["original_lines"],
+            "edited_lines": edit_data["edited_lines"],
+            "stats": edit_data.get("stats", {}),
             "chapter_number": chapter.chapter_number,
             "title": chapter.title,
         }
@@ -176,25 +168,37 @@ async def update_chapter_edits(
         raise HTTPException(status_code=404, detail="Chapter not found")
 
     try:
+        from app.services.processing_service import ProcessingService
+
         # Load existing edit data or create new
         edit_data = FileManager.load_chapter_edits(
             chapter.project_id, chapter.chapter_number
         ) or {}
 
-        # Load original content
-        original_content = FileManager.load_chapter_content(
+        # Load original XHTML
+        original_xhtml = FileManager.load_chapter_content(
             chapter.original_content_path
         )
 
-        # Update edited content
-        edit_data["edited_content"] = edited_content
+        # Extract original text (already filters blank lines)
+        original_text = ProcessingService._extract_body_content(original_xhtml)
+
+        # Split into lines (no filtering needed, already done in extraction)
+        original_lines = original_text.split('\n')
+        edited_lines = edited_content.split('\n')
+
+        # Update with new line-based format
+        edit_data["original_xhtml"] = original_xhtml
+        edit_data["original_lines"] = original_lines
+        edit_data["edited_lines"] = edited_lines
         edit_data["manually_edited"] = True
 
-        # Generate new stats
-        diff_chunks = EditParser.generate_diff(original_content, edited_content)
+        # Calculate basic stats
         edit_data["stats"] = {
-            "diff_chunks": len(diff_chunks),
+            "total_edits": 0,
             "manually_edited": True,
+            "original_line_count": len(edit_data["original_lines"]),
+            "edited_line_count": len(edit_data["edited_lines"]),
         }
 
         # Save updated edit data

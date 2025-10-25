@@ -8,12 +8,50 @@ class EPubEditorApp {
         this.projects = [];
         this.chapters = [];
 
+        this.setupRouting();
         this.init();
     }
 
-    init() {
+    setupRouting() {
+        // Handle browser back/forward buttons
+        window.addEventListener('popstate', async () => {
+            await this.handleRoute(window.location.pathname);
+        });
+    }
+
+    async handleRoute(path) {
+        // Parse route patterns
+        const projectMatch = path.match(/^\/projects\/(\d+)$/);
+        const diffMatch = path.match(/^\/projects\/(\d+)\/chapters\/(\d+)\/diff$/);
+
+        if (diffMatch) {
+            // Diff view: /projects/:id/chapters/:chapterId/diff
+            const projectId = parseInt(diffMatch[1]);
+            const chapterId = parseInt(diffMatch[2]);
+            await this.loadProject(projectId);
+            await this.showDiffById(chapterId);
+        } else if (projectMatch) {
+            // Dashboard view: /projects/:id
+            const projectId = parseInt(projectMatch[1]);
+            await this.loadProject(projectId);
+            await this.showDashboard();
+        } else {
+            // Home view: /
+            this.showProjectsView();
+        }
+    }
+
+    async init() {
         this.setupEventListeners();
-        this.loadProjects();
+        await this.loadProjects();
+
+        // Handle initial route
+        await this.handleRoute(window.location.pathname);
+    }
+
+    navigate(path) {
+        window.history.pushState({}, '', path);
+        this.handleRoute(path);
     }
 
     setupEventListeners() {
@@ -52,6 +90,7 @@ class EPubEditorApp {
 
         // Home button
         document.getElementById('home-btn').addEventListener('click', () => {
+            this.navigate('/');
             this.showProjectsView();
         });
 
@@ -341,6 +380,13 @@ class EPubEditorApp {
         };
 
         try {
+            // Ensure WebSocket is connected BEFORE starting processing
+            if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
+                this.connectWebSocket();
+                // Wait a moment for WebSocket to establish
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+
             const response = await fetch(`/api/projects/${this.currentProject.id}/process`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -350,7 +396,6 @@ class EPubEditorApp {
             if (response.ok) {
                 this.showToast('Processing started', 'success');
                 document.getElementById('processing-modal').classList.add('hidden');
-                this.connectWebSocket();
             } else {
                 const error = await response.json();
                 this.showToast(`Failed to start: ${error.detail}`, 'error');
@@ -418,6 +463,11 @@ class EPubEditorApp {
     }
 
     async viewChapterDiff(chapterId) {
+        this.navigate(`/projects/${this.currentProject.id}/chapters/${chapterId}/diff`);
+        await this.showDiffById(chapterId);
+    }
+
+    async showDiffById(chapterId) {
         try {
             const response = await fetch(`/api/chapters/${chapterId}/diff`);
             if (response.ok) {
@@ -489,14 +539,20 @@ class EPubEditorApp {
                 console.log('WebSocket connection confirmed');
                 break;
 
+            case 'chapter_reset':
+                this.updateChapterStatus(message.chapter_id, 'not_started');
+                break;
+
             case 'chapter_started':
                 this.updateChapterStatus(message.chapter_id, 'in_progress');
-                this.showToast(`Processing chapter ${message.chapter_number}...`, 'info');
+                // Update project status if not already set
+                if (this.currentProject && this.currentProject.processing_status !== 'processing') {
+                    this.updateProjectStatus('processing');
+                }
                 break;
 
             case 'chapter_completed':
                 this.updateChapterStatus(message.chapter_id, 'completed');
-                this.showToast(`Chapter ${message.chapter_number} completed`, 'success');
                 break;
 
             case 'chapter_failed':
@@ -506,9 +562,7 @@ class EPubEditorApp {
 
             case 'processing_complete':
                 this.showToast('All chapters processed!', 'success');
-                this.loadProject(this.currentProject.id).then(() => {
-                    this.renderDashboard();
-                });
+                this.updateProjectStatus('completed');
                 break;
 
             case 'error':
@@ -533,6 +587,63 @@ class EPubEditorApp {
                     statusBadge.className = `status-badge px-2 py-1 text-xs font-medium rounded-full status-${status}`;
                     statusBadge.textContent = status.replace('_', ' ').toUpperCase();
                 }
+            }
+            // Update progress bar
+            this.updateProgressBar();
+        }
+    }
+
+    updateProgressBar() {
+        if (!this.chapters || this.chapters.length === 0) return;
+
+        const totalChapters = this.chapters.length;
+        const completedChapters = this.chapters.filter(c => c.processing_status === 'completed').length;
+        const progress = Math.round((completedChapters / totalChapters) * 100);
+
+        // Update progress text
+        const progressTextElement = document.querySelector('.flex.justify-between.text-sm.text-gray-600 span:last-child');
+        if (progressTextElement) {
+            progressTextElement.textContent = `${completedChapters} / ${totalChapters} chapters (${progress}%)`;
+        }
+
+        // Update progress bar
+        const progressBarElement = document.querySelector('.bg-blue-600.h-2.rounded-full');
+        if (progressBarElement) {
+            progressBarElement.style.width = `${progress}%`;
+        }
+    }
+
+    updateProjectStatus(status) {
+        if (this.currentProject) {
+            this.currentProject.processing_status = status;
+
+            // Update project status badge (the larger one at the top)
+            const projectStatusBadge = document.querySelector('.bg-white.rounded-lg.shadow-sm.border .status-badge');
+            if (projectStatusBadge) {
+                projectStatusBadge.className = `status-badge px-3 py-1 text-sm font-medium rounded-full status-${status}`;
+                projectStatusBadge.textContent = status.toUpperCase();
+            }
+
+            // Update processing controls to show appropriate buttons
+            const controlsContainer = document.querySelector('.bg-white.rounded-lg.shadow-sm.border.p-6.mb-6 .flex.space-x-3');
+            if (controlsContainer) {
+                const completedChapters = this.chapters.filter(c => c.processing_status === 'completed').length;
+                const hasLLMConfig = this.currentProject.llmConfig && this.currentProject.llmConfig.configured;
+
+                let buttonsHtml = '';
+                if (status === 'idle' || status === 'completed') {
+                    buttonsHtml += `<button onclick="app.showProcessingModal()" class="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-md" ${!hasLLMConfig ? 'disabled' : ''}>Start Processing</button>`;
+                } else if (status === 'processing') {
+                    buttonsHtml += `<button onclick="app.pauseProcessing()" class="px-4 py-2 text-sm font-medium text-white bg-yellow-600 hover:bg-yellow-700 rounded-md">Pause</button>`;
+                    buttonsHtml += `<button onclick="app.stopProcessing()" class="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-md">Stop</button>`;
+                } else if (status === 'paused') {
+                    buttonsHtml += `<button onclick="app.resumeProcessing()" class="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-md">Resume</button>`;
+                    buttonsHtml += `<button onclick="app.stopProcessing()" class="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-md">Stop</button>`;
+                }
+                if (completedChapters > 0) {
+                    buttonsHtml += `<button onclick="app.exportProject()" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md">Export ePub</button>`;
+                }
+                controlsContainer.innerHTML = buttonsHtml;
             }
         }
     }
@@ -598,17 +709,22 @@ class EPubEditorApp {
     }
 
     async openProject(projectId) {
-        const loaded = await this.loadProject(projectId);
-        if (loaded) {
-            this.currentView = 'dashboard';
-            document.getElementById('projects-view').classList.add('hidden');
-            document.getElementById('dashboard-view').classList.remove('hidden');
-            document.getElementById('project-breadcrumb').classList.remove('hidden');
-            document.getElementById('current-project-name').textContent = this.currentProject.name;
+        this.navigate(`/projects/${projectId}`);
+        await this.showDashboard();
+    }
 
-            this.renderDashboard();
-            this.connectWebSocket();
-        }
+    async showDashboard() {
+        if (!this.currentProject) return;
+
+        this.currentView = 'dashboard';
+        document.getElementById('projects-view').classList.add('hidden');
+        document.getElementById('dashboard-view').classList.remove('hidden');
+        document.getElementById('diff-view').classList.add('hidden');
+        document.getElementById('project-breadcrumb').classList.remove('hidden');
+        document.getElementById('current-project-name').textContent = this.currentProject.name;
+
+        this.renderDashboard();
+        this.connectWebSocket();
     }
 
     renderDashboard() {
@@ -769,17 +885,132 @@ class EPubEditorApp {
         document.getElementById('dashboard-view').classList.add('hidden');
         diffView.classList.remove('hidden');
 
+        const originalLines = diff.original_lines || [];
+        const editedLines = diff.edited_lines || [];
+        const maxLines = Math.max(originalLines.length, editedLines.length);
+
+        // Store diff data for filtering
+        this.currentDiff = {
+            originalLines,
+            editedLines,
+            maxLines,
+            chapterNumber: diff.chapter_number,
+            title: diff.title,
+            stats: diff.stats
+        };
+
+        // Initial render with all lines
+        this.updateDiffDisplay(false);
+    }
+
+    computeInlineDiff(original, edited) {
+        // Simple word-based diff for inline highlighting
+        const origWords = original.split(/(\s+)/);
+        const editedWords = edited.split(/(\s+)/);
+
+        let origHtml = '';
+        let editedHtml = '';
+
+        // Find common prefix
+        let commonPrefix = 0;
+        while (commonPrefix < Math.min(origWords.length, editedWords.length) &&
+               origWords[commonPrefix] === editedWords[commonPrefix]) {
+            commonPrefix++;
+        }
+
+        // Find common suffix
+        let commonSuffix = 0;
+        while (commonSuffix < Math.min(origWords.length - commonPrefix, editedWords.length - commonPrefix) &&
+               origWords[origWords.length - 1 - commonSuffix] === editedWords[editedWords.length - 1 - commonSuffix]) {
+            commonSuffix++;
+        }
+
+        // Build original with highlights
+        for (let i = 0; i < origWords.length; i++) {
+            const word = this.escapeHtml(origWords[i]);
+            if (i < commonPrefix || i >= origWords.length - commonSuffix) {
+                origHtml += word;
+            } else {
+                origHtml += `<mark class="bg-red-200 font-semibold">${word}</mark>`;
+            }
+        }
+
+        // Build edited with highlights
+        for (let i = 0; i < editedWords.length; i++) {
+            const word = this.escapeHtml(editedWords[i]);
+            if (i < commonPrefix || i >= editedWords.length - commonSuffix) {
+                editedHtml += word;
+            } else {
+                editedHtml += `<mark class="bg-green-200 font-semibold">${word}</mark>`;
+            }
+        }
+
+        return { origHtml, editedHtml };
+    }
+
+    updateDiffDisplay(showOnlyChanges) {
+        const diffView = document.getElementById('diff-view');
+        if (!this.currentDiff) return;
+
+        const { originalLines, editedLines, maxLines, chapterNumber, title, stats } = this.currentDiff;
+
+        // Count changes
+        let changedCount = 0;
+        for (let i = 0; i < maxLines; i++) {
+            const origLine = originalLines[i] || '';
+            const editedLine = editedLines[i] || '';
+            if (origLine !== editedLine) changedCount++;
+        }
+
+        // Generate line-by-line HTML
+        let diffHtml = '';
+        let displayedLines = 0;
+        for (let i = 0; i < maxLines; i++) {
+            const origLine = originalLines[i] || '';
+            const editedLine = editedLines[i] || '';
+            const lineChanged = origLine !== editedLine;
+
+            // Skip unchanged lines if filtering
+            if (showOnlyChanges && !lineChanged) continue;
+
+            displayedLines++;
+
+            // Compute inline diff for changed lines
+            let origDisplay, editedDisplay;
+            if (lineChanged && origLine && editedLine) {
+                const inlineDiff = this.computeInlineDiff(origLine, editedLine);
+                origDisplay = inlineDiff.origHtml;
+                editedDisplay = inlineDiff.editedHtml;
+            } else {
+                origDisplay = this.escapeHtml(origLine);
+                editedDisplay = this.escapeHtml(editedLine);
+            }
+
+            diffHtml += `
+                <div class="diff-line grid grid-cols-2 divide-x divide-gray-200 ${lineChanged ? 'bg-yellow-50' : ''}" data-changed="${lineChanged}">
+                    <div class="flex items-start">
+                        <div class="w-12 flex-shrink-0 text-right pr-4 pt-1 text-gray-400 text-xs font-mono select-none leading-5">${i + 1}</div>
+                        <div class="flex-1 px-4 py-1 text-sm font-mono whitespace-pre-wrap leading-5 ${lineChanged ? 'bg-red-50' : ''}">${origDisplay}</div>
+                    </div>
+                    <div class="flex items-start">
+                        <div class="w-12 flex-shrink-0 text-right pr-4 pt-1 text-gray-400 text-xs font-mono select-none leading-5">${i + 1}</div>
+                        <div class="flex-1 px-4 py-1 text-sm font-mono whitespace-pre-wrap leading-5 ${lineChanged ? 'bg-green-50' : ''}">${editedDisplay}</div>
+                    </div>
+                </div>
+            `;
+        }
+
         diffView.innerHTML = `
             <div class="fade-in">
                 <div class="mb-6 flex justify-between items-center">
                     <div>
-                        <h2 class="text-2xl font-bold text-gray-900">Chapter ${diff.chapter_number}: ${this.escapeHtml(diff.title || 'Untitled')}</h2>
-                        ${diff.stats ? `
+                        <h2 class="text-2xl font-bold text-gray-900">Chapter ${chapterNumber}: ${this.escapeHtml(title || 'Untitled')}</h2>
+                        ${stats ? `
                             <p class="text-sm text-gray-600 mt-1">
-                                ${diff.stats.total_edits || 0} edits •
-                                ${diff.stats.replacements || 0} replacements •
-                                ${diff.stats.insertions || 0} insertions •
-                                ${diff.stats.deletions || 0} deletions
+                                ${stats.total_edits || 0} edits •
+                                ${stats.replacements || 0} replacements •
+                                ${stats.insertions || 0} insertions •
+                                ${stats.deletions || 0} deletions
                             </p>
                         ` : ''}
                     </div>
@@ -788,25 +1019,56 @@ class EPubEditorApp {
                     </button>
                 </div>
 
-                <div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-                    <div class="grid grid-cols-2 divide-x divide-gray-200">
-                        <div class="p-6">
-                            <h3 class="text-lg font-semibold text-gray-900 mb-4">Original</h3>
-                            <pre class="text-sm whitespace-pre-wrap font-mono">${this.escapeHtml(diff.original)}</pre>
-                        </div>
-                        <div class="p-6">
-                            <h3 class="text-lg font-semibold text-gray-900 mb-4">Edited</h3>
-                            <pre class="text-sm whitespace-pre-wrap font-mono">${this.escapeHtml(diff.edited)}</pre>
+                <!-- Filter Controls -->
+                <div class="mb-4 bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+                    <div class="flex items-center justify-between">
+                        <label class="flex items-center cursor-pointer">
+                            <input type="checkbox" id="diff-filter-changes" onchange="app.toggleDiffFilter(this.checked)"
+                                   class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                                   ${showOnlyChanges ? 'checked' : ''}>
+                            <span class="ml-2 text-sm font-medium text-gray-900">Show only changed lines</span>
+                        </label>
+                        <div class="text-sm text-gray-600">
+                            <span class="font-semibold">${changedCount}</span> changed /
+                            <span class="font-semibold">${maxLines}</span> total lines
+                            ${showOnlyChanges ? ` (showing ${displayedLines})` : ''}
                         </div>
                     </div>
+                </div>
+
+                <div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+                    <div class="grid grid-cols-2 divide-x divide-gray-200 bg-gray-50 border-b border-gray-200 sticky top-0">
+                        <div class="px-6 py-3">
+                            <h3 class="text-sm font-semibold text-gray-900">Original</h3>
+                        </div>
+                        <div class="px-6 py-3">
+                            <h3 class="text-sm font-semibold text-gray-900">Edited</h3>
+                        </div>
+                    </div>
+                    <div class="max-h-[calc(100vh-320px)] overflow-y-auto">
+                        ${diffHtml || '<div class="p-6 text-center text-gray-500">No changes to display</div>'}
+                    </div>
+                </div>
+                <div class="mt-4 text-sm text-gray-600 flex flex-wrap gap-2">
+                    <span class="inline-block px-3 py-1 bg-yellow-50 border border-yellow-200 rounded">Changed lines</span>
+                    <span class="inline-block px-3 py-1 bg-red-50 border border-red-200 rounded">Original side</span>
+                    <span class="inline-block px-3 py-1 bg-green-50 border border-green-200 rounded">Edited side</span>
+                    <span class="inline-block px-3 py-1 border border-gray-300 rounded"><mark class="bg-red-200 font-semibold px-1">Removed text</mark></span>
+                    <span class="inline-block px-3 py-1 border border-gray-300 rounded"><mark class="bg-green-200 font-semibold px-1">Added text</mark></span>
                 </div>
             </div>
         `;
     }
 
+    toggleDiffFilter(showOnlyChanges) {
+        this.updateDiffDisplay(showOnlyChanges);
+    }
+
     closeDiff() {
+        this.navigate(`/projects/${this.currentProject.id}`);
         document.getElementById('diff-view').classList.add('hidden');
         document.getElementById('dashboard-view').classList.remove('hidden');
+        this.currentDiff = null; // Clear cached diff data
     }
 
     showLLMConfig() {
