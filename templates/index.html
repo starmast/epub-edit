@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ePub Editor - LLM-Powered Book Editing</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* Status indicators */
+        .status-idle { @apply bg-gray-200 text-gray-700; }
+        .status-not_started { @apply bg-gray-200 text-gray-700; }
+        .status-queued { @apply bg-yellow-200 text-yellow-800; }
+        .status-in_progress { @apply bg-blue-200 text-blue-800 animate-pulse; }
+        .status-processing { @apply bg-blue-200 text-blue-800 animate-pulse; }
+        .status-paused { @apply bg-orange-200 text-orange-800; }
+        .status-completed { @apply bg-green-200 text-green-800; }
+        .status-failed { @apply bg-red-200 text-red-800; }
+
+        /* Diff viewer styles */
+        .diff-addition { @apply bg-green-100 text-green-900; }
+        .diff-deletion { @apply bg-red-100 text-red-900; }
+        .diff-context { @apply bg-gray-50 text-gray-700; }
+
+        /* Animations */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .fade-in {
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        /* Drag and drop */
+        .drag-over {
+            @apply border-blue-500 bg-blue-50;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <!-- Toast Notifications -->
+    <div id="toast-container" class="fixed top-4 right-4 z-50 space-y-2"></div>
+
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm border-b border-gray-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <h1 class="text-2xl font-bold text-gray-900">ePub Editor</h1>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <button id="home-btn" class="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900">
+                        Projects
+                    </button>
+                    <div id="project-breadcrumb" class="hidden text-sm text-gray-500">
+                        <span class="mx-2">/</span>
+                        <span id="current-project-name" class="font-medium text-gray-900"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+        <!-- Projects List View -->
+        <div id="projects-view" class="fade-in">
+            <div class="mb-8">
+                <h2 class="text-3xl font-bold text-gray-900 mb-4">Your Projects</h2>
+
+                <!-- Upload Area -->
+                <div id="upload-area" class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-gray-400 transition-colors cursor-pointer">
+                    <input type="file" id="epub-file-input" accept=".epub" class="hidden">
+                    <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                        <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                    <p class="mt-2 text-sm text-gray-600">
+                        <span class="font-medium text-blue-600 hover:text-blue-500">Click to upload</span>
+                        or drag and drop
+                    </p>
+                    <p class="text-xs text-gray-500">ePub files only</p>
+                </div>
+            </div>
+
+            <!-- Projects Grid -->
+            <div id="projects-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <!-- Projects will be inserted here -->
+            </div>
+
+            <!-- Empty State -->
+            <div id="empty-state" class="text-center py-12 hidden">
+                <svg class="mx-auto h-24 w-24 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                </svg>
+                <h3 class="mt-2 text-lg font-medium text-gray-900">No projects yet</h3>
+                <p class="mt-1 text-sm text-gray-500">Get started by uploading an ePub file</p>
+            </div>
+        </div>
+
+        <!-- Project Dashboard View -->
+        <div id="dashboard-view" class="hidden">
+            <!-- Dashboard content will be loaded here -->
+        </div>
+
+        <!-- Diff Viewer -->
+        <div id="diff-view" class="hidden">
+            <!-- Diff content will be loaded here -->
+        </div>
+    </main>
+
+    <!-- Modals -->
+
+    <!-- LLM Configuration Modal -->
+    <div id="llm-config-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-40">
+        <div class="relative top-20 mx-auto p-5 border w-full max-w-2xl shadow-lg rounded-md bg-white">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-medium text-gray-900">LLM Configuration</h3>
+                <button class="modal-close text-gray-400 hover:text-gray-600">
+                    <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <form id="llm-config-form">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">API Endpoint</label>
+                        <input type="url" id="api-endpoint" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500" placeholder="https://api.openai.com/v1" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">API Key</label>
+                        <input type="password" id="api-key" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">Model</label>
+                        <div class="flex gap-2">
+                            <input type="text" id="model" list="model-suggestions" value="gpt-4" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500" placeholder="Enter model name" required>
+                            <button type="button" id="fetch-models-btn" class="mt-1 px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 whitespace-nowrap">
+                                Fetch Models
+                            </button>
+                        </div>
+                        <datalist id="model-suggestions">
+                            <option value="gpt-4">OpenAI GPT-4</option>
+                            <option value="gpt-4-turbo">OpenAI GPT-4 Turbo</option>
+                            <option value="gpt-4o">OpenAI GPT-4o</option>
+                            <option value="gpt-4o-mini">OpenAI GPT-4o Mini</option>
+                            <option value="gpt-3.5-turbo">OpenAI GPT-3.5 Turbo</option>
+                        </datalist>
+                        <p id="model-fetch-status" class="mt-1 text-sm text-gray-500">Click "Fetch Models" to load available models from your API endpoint</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">Temperature (0-1)</label>
+                        <input type="number" id="temperature" min="0" max="1" step="0.1" value="0.3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">Max Tokens</label>
+                        <input type="number" id="max-tokens" value="4096" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">Editing Style</label>
+                        <select id="editing-style" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                            <option value="default">Moderate (Default)</option>
+                            <option value="light">Light (Minimal changes)</option>
+                            <option value="heavy">Heavy (Comprehensive editing)</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="mt-6 flex justify-end space-x-3">
+                    <button type="button" class="modal-close px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md">
+                        Cancel
+                    </button>
+                    <button type="button" id="test-connection-btn" class="px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 border border-blue-300 rounded-md">
+                        Test Connection
+                    </button>
+                    <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md">
+                        Save Configuration
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Processing Settings Modal -->
+    <div id="processing-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-40">
+        <div class="relative top-20 mx-auto p-5 border w-full max-w-lg shadow-lg rounded-md bg-white">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-medium text-gray-900">Processing Settings</h3>
+                <button class="modal-close text-gray-400 hover:text-gray-600">
+                    <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <form id="processing-form">
+                <div class="space-y-4">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Start Chapter</label>
+                            <input type="number" id="start-chapter" min="1" value="1" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">End Chapter</label>
+                            <input type="number" id="end-chapter" min="1" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">Parallel Workers</label>
+                        <input type="range" id="worker-count" min="1" max="10" value="3" class="mt-1 block w-full">
+                        <div class="flex justify-between text-xs text-gray-500">
+                            <span>1</span>
+                            <span id="worker-count-display">3</span>
+                            <span>10</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="mt-6 flex justify-end space-x-3">
+                    <button type="button" class="modal-close px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md">
+                        Cancel
+                    </button>
+                    <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md">
+                        Start Processing
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

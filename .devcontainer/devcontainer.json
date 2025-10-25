@@ -1,0 +1,19 @@
+{
+  "name": "EPUB Genie Edit",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "settings": {
+    "python.defaultInterpreterPath": "/usr/local/bin/python",
+    "terminal.integrated.defaultProfile.linux": "bash"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "24"
+    }
+  },
+  "forwardPorts": [3000, 8000, 7474, 7687],
+  "postCreateCommand": "pip install -r requirements.txt && npm install -g @openai/codex@latest @anthropic-ai/claude-code",
+  "remoteUser": "vscode"
+}
