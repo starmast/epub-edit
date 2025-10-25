@@ -88,6 +88,11 @@ class EPubEditorApp {
         document.getElementById('worker-count').addEventListener('input', (e) => {
             document.getElementById('worker-count-display').textContent = e.target.value;
         });
+
+        // Chapters per batch slider
+        document.getElementById('chapters-per-batch').addEventListener('input', (e) => {
+            document.getElementById('chapters-per-batch-display').textContent = e.target.value;
+        });
     }
 
     // ========== API Methods ==========
@@ -331,7 +336,8 @@ class EPubEditorApp {
         const config = {
             start_chapter: parseInt(document.getElementById('start-chapter').value),
             end_chapter: parseInt(document.getElementById('end-chapter').value) || null,
-            worker_count: parseInt(document.getElementById('worker-count').value)
+            worker_count: parseInt(document.getElementById('worker-count').value),
+            chapters_per_batch: parseInt(document.getElementById('chapters-per-batch').value)
         };
 
         try {
